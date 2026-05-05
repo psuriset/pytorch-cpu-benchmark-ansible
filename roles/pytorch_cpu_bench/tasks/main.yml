@@ -1,0 +1,122 @@
+---
+- name: Show target host
+  ansible.builtin.debug:
+    msg: "Running PyTorch CPU benchmark on {{ inventory_hostname }}"
+
+- name: Install Python tooling on RHEL/Fedora
+  ansible.builtin.package:
+    name:
+      - python3
+      - python3-pip
+      - python3-virtualenv
+    state: present
+  become: true
+  when: ansible_os_family == "RedHat"
+
+- name: Install Python tooling on Debian/Ubuntu
+  ansible.builtin.package:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+    state: present
+  become: true
+  when: ansible_os_family == "Debian"
+
+- name: Create benchmark directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ bench_dir }}"
+    - "{{ bench_dir }}/results"
+
+- name: Copy requirements
+  ansible.builtin.copy:
+    src: requirements.txt
+    dest: "{{ bench_dir }}/requirements.txt"
+    mode: "0644"
+
+- name: Create Python virtual environment
+  ansible.builtin.command:
+    cmd: "{{ python_bin }} -m venv {{ venv_dir }}"
+    creates: "{{ venv_dir }}/bin/python"
+
+- name: Upgrade pip
+  ansible.builtin.command:
+    cmd: "{{ venv_dir }}/bin/python -m pip install --upgrade pip"
+  changed_when: false
+
+- name: Install PyTorch dependencies
+  ansible.builtin.pip:
+    requirements: "{{ bench_dir }}/requirements.txt"
+    virtualenv: "{{ venv_dir }}"
+
+- name: Render benchmark script
+  ansible.builtin.template:
+    src: cpu_bench.py.j2
+    dest: "{{ bench_dir }}/cpu_bench.py"
+    mode: "0755"
+
+- name: Run benchmark for each thread count
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export OMP_NUM_THREADS={{ item }}
+    export MKL_NUM_THREADS={{ item }}
+    export BENCH_THREADS={{ item }}
+    export MATRIX_SIZE={{ matrix_size }}
+    export MIN_RUN_TIME={{ min_run_time }}
+
+    {{ venv_dir }}/bin/python {{ bench_dir }}/cpu_bench.py \
+      | tee {{ bench_dir }}/results/pytorch_cpu_threads_{{ item }}.json
+  args:
+    executable: /bin/bash
+  loop: "{{ bench_threads.split(',') }}"
+  register: bench_output
+
+- name: Create summary CSV on remote host
+  ansible.builtin.shell: |
+    set -euo pipefail
+    cd {{ bench_dir }}/results
+    echo "host,threads,matrix_size,median_seconds,mean_seconds,iqr_seconds,torch_version" > summary.csv
+    for f in pytorch_cpu_threads_*.json; do
+      {{ venv_dir }}/bin/python - <<'PY' "$f"
+import json, sys
+f = sys.argv[1]
+data = json.load(open(f))
+print(
+    f"{data['hostname']},{data['torch_num_threads']},{data['matrix_size']},"
+    f"{data['median_seconds']},{data['mean_seconds']},{data['iqr_seconds']},"
+    f"{data['torch_version']}"
+)
+PY
+    done >> summary.csv
+  args:
+    executable: /bin/bash
+
+- name: Fetch result directory
+  ansible.builtin.fetch:
+    src: "{{ bench_dir }}/results/{{ item }}"
+    dest: "{{ playbook_dir }}/../results/{{ inventory_hostname }}/"
+    flat: true
+  loop:
+    - summary.csv
+  ignore_errors: false
+
+- name: Find JSON result files
+  ansible.builtin.find:
+    paths: "{{ bench_dir }}/results"
+    patterns: "pytorch_cpu_threads_*.json"
+  register: json_results
+
+- name: Fetch JSON result files
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: "{{ playbook_dir }}/../results/{{ inventory_hostname }}/"
+    flat: true
+  loop: "{{ json_results.files }}"
+
+- name: Print local result location
+  ansible.builtin.debug:
+    msg: "Results fetched to ./results/{{ inventory_hostname }}/"

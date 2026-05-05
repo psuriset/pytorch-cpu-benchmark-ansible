@@ -1,0 +1,16 @@
+---
+- name: Run PyTorch CPU benchmark
+  hosts: bench_nodes
+  gather_facts: true
+  become: false
+
+  vars:
+    bench_dir: /tmp/pytorch-cpu-bench
+    venv_dir: /tmp/pytorch-cpu-bench/venv
+    python_bin: python3
+    bench_threads: "1,2,4,8"
+    matrix_size: 4096
+    min_run_time: 5
+
+  roles:
+    - pytorch_cpu_bench

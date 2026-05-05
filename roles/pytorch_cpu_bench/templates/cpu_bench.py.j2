@@ -1,0 +1,64 @@
+import os
+import json
+import platform
+import subprocess
+from datetime import datetime
+
+import torch
+import torch.utils.benchmark as benchmark
+
+
+MATRIX_SIZE = int(os.environ.get("MATRIX_SIZE", "{{ matrix_size }}"))
+MIN_RUN_TIME = float(os.environ.get("MIN_RUN_TIME", "{{ min_run_time }}"))
+THREADS = int(os.environ.get("BENCH_THREADS", "1"))
+
+
+def shell(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.STDOUT).strip()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def main():
+    torch.set_num_threads(THREADS)
+
+    x = torch.randn(MATRIX_SIZE, MATRIX_SIZE)
+    w = torch.randn(MATRIX_SIZE, MATRIX_SIZE)
+
+    # Warmup
+    for _ in range(3):
+        _ = x @ w
+
+    timer = benchmark.Timer(
+        stmt="x @ w",
+        globals={"x": x, "w": w},
+        num_threads=torch.get_num_threads(),
+    )
+
+    result = timer.blocked_autorange(min_run_time=MIN_RUN_TIME)
+
+    payload = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "processor": platform.processor(),
+        "python_version": platform.python_version(),
+        "torch_version": torch.__version__,
+        "torch_num_threads": torch.get_num_threads(),
+        "torch_num_interop_threads": torch.get_num_interop_threads(),
+        "matrix_size": MATRIX_SIZE,
+        "min_run_time": MIN_RUN_TIME,
+        "median_seconds": result.median,
+        "iqr_seconds": result.iqr,
+        "mean_seconds": result.mean,
+        "number_per_run": result.number_per_run,
+        "raw_result": str(result),
+        "lscpu": shell("lscpu"),
+    }
+
+    print(json.dumps(payload, indent=2))
+
+
+if __name__ == "__main__":
+    main()
