@@ -59,6 +59,12 @@
     dest: "{{ bench_dir }}/cpu_bench.py"
     mode: "0755"
 
+- name: Copy summary CSV helper script
+  ansible.builtin.copy:
+    src: append_json_row.py
+    dest: "{{ bench_dir }}/append_json_row.py"
+    mode: "0644"
+
 - name: Run benchmark for each thread count
   ansible.builtin.shell: |
     set -euo pipefail
@@ -80,17 +86,9 @@
     set -euo pipefail
     cd {{ bench_dir }}/results
     echo "host,threads,matrix_size,median_seconds,mean_seconds,iqr_seconds,torch_version" > summary.csv
+    shopt -s nullglob
     for f in pytorch_cpu_threads_*.json; do
-      {{ venv_dir }}/bin/python - <<'PY' "$f"
-import json, sys
-f = sys.argv[1]
-data = json.load(open(f))
-print(
-    f"{data['hostname']},{data['torch_num_threads']},{data['matrix_size']},"
-    f"{data['median_seconds']},{data['mean_seconds']},{data['iqr_seconds']},"
-    f"{data['torch_version']}"
-)
-PY
+      {{ venv_dir }}/bin/python {{ bench_dir }}/append_json_row.py "$f"
     done >> summary.csv
   args:
     executable: /bin/bash
